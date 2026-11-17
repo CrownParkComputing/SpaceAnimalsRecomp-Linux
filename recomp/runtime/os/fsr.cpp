@@ -21,14 +21,16 @@
 #include "hos.h"   // avant <windows.h>, comme settings.cpp (GPTR)
 #include "settings.h"
 
-#include <windows.h>
+#include "posix/win32.h"
 #define VK_NO_PROTOTYPES
 #include <vulkan/vulkan.h>
 
 #include "fsr.h"
 
+#ifdef _WIN32
 #include "ffx/upscalers/include/ffx_upscale.h"
 #include "ffx/api/include/vk/ffx_api_vk.h"
+#endif
 
 #include <cmath>
 #include <cstdio>
@@ -37,6 +39,7 @@
 #include <string>
 #include <vector>
 
+#ifdef _WIN32
 namespace hos {
 namespace dlss {
 bool dlss_prevu();   // dlss.cpp : le DLSS de NVIDIA servira sans doute (demandé, carte NVIDIA RTX, cœur NGX trouvé)
@@ -382,3 +385,17 @@ bool evaluer(VkCommandBuffer cb, const dlss::Evaluation& e, uint64_t serie) {
 
 }  // namespace fsr
 }  // namespace hos
+#else
+namespace hos::fsr {
+int mode_demande() { return 0; }
+double echelle() { return 0; }
+bool prevu() { return false; }
+bool init(VkPhysicalDevice, VkDevice, PFN_vkGetDeviceProcAddr) { return false; }
+bool pret() { return false; }
+void couper(const char*) {}
+bool evaluer(VkCommandBuffer, const dlss::Evaluation&, uint64_t) { return false; }
+void menage(uint64_t) {}
+bool fonction_prete(uint32_t, uint32_t, uint32_t, uint32_t) { return false; }
+const char* description() { return "off (Windows FidelityFX backend)"; }
+}
+#endif

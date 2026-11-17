@@ -2,7 +2,10 @@
 *.nup
 extracted/
 work/
+/extracted
+/work
 recomp/build/
+recomp/out/
 recomp/launcher/extraits/
 recomp/launcher/build/
 # outils téléchargés (outils.py), launcher compilé, réglages et mises à jour locales

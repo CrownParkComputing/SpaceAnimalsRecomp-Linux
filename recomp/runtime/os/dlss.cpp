@@ -19,7 +19,7 @@
 #include "hos.h"   // avant <windows.h>, comme settings.cpp (GPTR)
 #include "settings.h"
 
-#include <windows.h>
+#include "posix/win32.h"
 #define VK_NO_PROTOTYPES
 #include <vulkan/vulkan.h>
 
@@ -32,6 +32,7 @@
 #include <cstring>
 #include <string>
 
+#ifdef _WIN32
 namespace hos {
 namespace vkr {
 bool carte_prevue(std::string* nom, uint32_t* fabricant);   // vk_render.cpp (vk_render.h tire les en-têtes NVN)
@@ -535,3 +536,24 @@ bool evaluer(VkCommandBuffer cb, const Evaluation& e, uint64_t serie) {
 
 }  // namespace dlss
 }  // namespace hos
+#else
+namespace hos::dlss {
+char modele_demande() { return 0; }
+double echelle_dlss() { return 0; }
+void extensions_instance(std::vector<const char*>&, const std::vector<VkExtensionProperties>&) {}
+void extensions_peripherique(VkInstance, VkPhysicalDevice, const VkPhysicalDeviceProperties&,
+                             const std::vector<VkExtensionProperties>&, std::vector<const char*>&) {}
+bool init(VkInstance, VkPhysicalDevice, VkDevice, PFN_vkGetInstanceProcAddr, PFN_vkGetDeviceProcAddr) {
+    if (settings().dlss) HLOG("dlss", "Windows NGX backend unavailable on Linux; using game anti-aliasing");
+    return false;
+}
+bool pret() { return false; }
+void couper(const char*) {}
+bool evaluer(VkCommandBuffer, const Evaluation&, uint64_t) { return false; }
+void menage(uint64_t) {}
+bool fonction_prete(uint32_t, uint32_t, uint32_t, uint32_t) { return false; }
+const char* description() { return "off (Windows NGX backend)"; }
+bool dlss_prevu() { return false; }
+const char* technique() { return "native"; }
+}
+#endif

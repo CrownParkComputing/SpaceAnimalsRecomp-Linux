@@ -6,7 +6,7 @@
 // Syncs NVN : un objet est « en attente » entre sa soumission dans un FenceSync et la fin, sur le GPU, du
 // travail Vulkan soumis avant ce FenceSync. Le thread GPU soumet sans attendre (vkr::flush_async) ; le fil
 // de complétion de vk_render.cpp signale le sync quand le sémaphore chronologique atteint la soumission.
-#include <windows.h>
+#include "posix/win32.h"
 
 #include "nvn_exec.h"
 #include "gfx.h"

@@ -49,7 +49,8 @@ def compilateur_genere():
         return choix, nom, []
     # [[clang::musttail]] exige la signature de l'appelant : clang_compat.h fait passer la cible des sauts indirects
     # par l'état CPU (rt_tailjump) ; -w : le code généré n'a pas à produire d'avertissements
-    return choix, nom, ["--target=x86_64-w64-windows-gnu", "-include", os.path.join(RUNTIME, "clang_compat.h"), "-w"]
+    target = ["--target=x86_64-w64-windows-gnu"] if os.name == "nt" else []
+    return choix, nom, target + ["-include", os.path.join(RUNTIME, "clang_compat.h"), "-w"]
 
 
 def drapeaux_genere(opt=None):
@@ -104,8 +105,10 @@ def compile_one(cxx, src, obj, flags):
     osdir = os.path.join(RUNTIME, "os")
     if os.path.dirname(os.path.abspath(src)) == osdir:
         # couche hôte (runtime/os) : dépend aussi de ses propres en-têtes
-        extra = b"".join(open(os.path.join(osdir, h), "rb").read()
-                         for h in sorted(os.listdir(osdir)) if h.endswith(".h"))
+        headers = sorted(os.path.join(root, name)
+                         for root, _, names in os.walk(osdir)
+                         for name in names if name.endswith((".h", ".inc")))
+        extra = b"".join(open(header, "rb").read() for header in headers)
     cles = cles_objet(flags, open(src, "rb").read(), extra)
     key = cles[0]
     stamp = obj + ".key"

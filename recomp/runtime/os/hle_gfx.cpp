@@ -10,11 +10,16 @@
 // Le rendu réel (commandes, shaders) n'est pas encore traduit : la présentation affiche, dans une
 // fenêtre hôte, la dernière couleur d'effacement de la texture présentée (preuve de la boucle).
 #include "gfx.h"
+#include "posix/win32.h"
 #include "nvn.h"
 #include "settings.h"
 #include "vk_render.h"
 
+#ifdef _WIN32
+#ifdef _WIN32
 #include <direct.h>
+#endif
+#endif
 
 #include <array>
 #include <atomic>

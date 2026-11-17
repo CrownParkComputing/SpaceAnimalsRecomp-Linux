@@ -2,11 +2,16 @@
 // image (RECOMP_FRAME_STATS=N : chaque commande et chaque dessin de l'image N dans le journal).
 // Le moteur de rendu Vulkan (vk_render.cpp) se branche sur ce suivi d'état.
 #include "nvn_exec.h"
+#include "posix/win32.h"
 #include "vk_render.h"
 
 #include <algorithm>
 #include <chrono>
+#ifdef _WIN32
+#ifdef _WIN32
 #include <direct.h>
+#endif
+#endif
 
 namespace hos {
 namespace nvn {

@@ -1,5 +1,6 @@
 // Service HLE de l'heure (time:u / time:a / time:s) : horloges système et stationnaire, mémoire
 // partagée lue directement par le SDK, fuseau horaire (UTC + décalage local de l'hôte).
+#include "posix/win32.h"
 #include "svc_util.h"
 
 #include <chrono>

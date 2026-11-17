@@ -9,6 +9,7 @@ en mémoire (manifest) mais ses fonctions ne sont pas appelables : utile pour te
 démarrage avant la fin du build de main.
 """
 import argparse
+import concurrent.futures
 import os
 import subprocess
 import sys
@@ -28,7 +29,8 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("--modules", default=",".join(ALL))
     p.add_argument("-O", default="2")
-    p.add_argument("--out", default=os.path.join(FULL, "recomp_main.exe"))
+    p.add_argument("-j", "--jobs", type=int, default=min(4, os.cpu_count() or 1))
+    p.add_argument("--out", default=os.path.join(FULL, "recomp_main.exe" if os.name == "nt" else "recomp_main"))
     a = p.parse_args()
     t0 = time.time()
     objs = []
@@ -53,22 +55,27 @@ def main():
     rt += sorted(os.path.join(osdir, f) for f in os.listdir(osdir) if f.endswith(".cpp"))
     rtobj = os.path.join(FULL, "rt")
     os.makedirs(rtobj, exist_ok=True)
-    flags = build.BASE_FLAGS + ["-O" + a.O, "-g1", "-Wall", "-Wno-unused-function",
-                                "-I" + os.path.join(build.RUNTIME, "third_party"),   # en-têtes Vulkan
-                                # API de Windows 10 : MSYS2 les expose par défaut, WinLibs (outils/ du paquet) vise Windows 7
-                                "-D_WIN32_WINNT=0x0A00", "-DWINVER=0x0A00",
-                                # GCC suppose la pile alignée sur 32 octets pour l'AVX, Windows ne l'aligne que sur 16 :
-                                # les écritures vectorielles alignées (vmovdqa) deviennent non alignées (même vitesse)
-                                "-Wa,-muse-unaligned-vector-move"]
+    flags = build.BASE_FLAGS + ["-O" + a.O, "-g1", "-Wall", "-Wno-unused-function"]
+    flags += [("-I" if os.name == "nt" else "-idirafter"),
+              os.path.join(build.RUNTIME, "third_party")]
+    if os.name == "nt":
+        flags += [
+            # API de Windows 10 : MSYS2 les expose par défaut, WinLibs (outils/ du paquet) vise Windows 7
+            "-D_WIN32_WINNT=0x0A00", "-DWINVER=0x0A00",
+            # GCC suppose la pile alignée sur 32 octets pour l'AVX, Windows ne l'aligne que sur 16 :
+            # les écritures vectorielles alignées (vmovdqa) deviennent non alignées (même vitesse)
+            "-Wa,-muse-unaligned-vector-move"]
     errs = []
-    for s in rt:
+    def compile_runtime(s):
         o = os.path.join(rtobj, os.path.splitext(os.path.basename(s))[0] + ".o")
         _, err = build.compile_one("g++", s, o, flags)
-        if err:
-            errs.append((s, err))
-        elif _ and os.path.exists(o):
-            pass
-        objs.append(o)
+        return s, o, err
+
+    with concurrent.futures.ThreadPoolExecutor(max(1, a.jobs)) as pool:
+        for s, o, err in pool.map(compile_runtime, rt):
+            if err:
+                errs.append((s, err))
+            objs.append(o)
     if errs:
         for s, e in errs:
             print(f"--- {s}\n{e[:6000]}")
@@ -96,7 +103,7 @@ def main():
            '        END\n    END\n'
            '    BLOCK "VarFileInfo"\n    BEGIN\n        VALUE "Translation", 0x0409, 1200\n    END\nEND\n'
            ).format(v=",".join(str(c) for c in chiffres), t=version)
-    if rc:
+    if rc and os.name == "nt":
         with open(os.path.join(rtobj, "icone.rc"), "w", encoding="utf-8") as fp:
             fp.write(rc)
         try:
@@ -122,10 +129,14 @@ def main():
     part = (a.out[:-4] + ".part.exe") if a.out.lower().endswith(".exe") else a.out + ".part"
     if os.path.exists(part):   # reste d'une édition de liens interrompue
         os.remove(part)
-    cmd = ["g++", "-o", part, "@" + rsp, "-static", "-static-libgcc", "-static-libstdc++",
-           "-latomic", "-lwinmm", "-lgdi32", "-luser32", "-lole32",
-           "-lmfplat", "-lmfreadwrite", "-lmfuuid",   # extraits vidéo (record.cpp)
-           "-Wl,--disable-high-entropy-va"]
+    if os.name == "nt":
+        cmd = ["g++", "-o", part, "@" + rsp, "-static", "-static-libgcc", "-static-libstdc++",
+               "-latomic", "-lwinmm", "-lgdi32", "-luser32", "-lole32",
+               "-lmfplat", "-lmfreadwrite", "-lmfuuid",   # extraits vidéo (record.cpp)
+               "-Wl,--disable-high-entropy-va"]
+    else:
+        # Linux : SDL3 (fenêtre, son, manette, surface Vulkan), le pilote Vulkan, les fils
+        cmd = ["g++", "-fuse-ld=lld", "-o", part, "@" + rsp, "-latomic", "-lSDL3", "-lvulkan", "-lpthread", "-ldl"]
     r = subprocess.run(cmd, capture_output=True, text=True)
     if r.returncode:
         print(r.stderr[:8000])

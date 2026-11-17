@@ -3,7 +3,7 @@
 
 #include "hos.h"
 
-#include <windows.h>
+#include "posix/win32.h"
 
 #include <cctype>
 #include <cstdio>
@@ -419,6 +419,30 @@ const Settings& settings() { return g_settings; }
 
 std::string language_code() {
     if (g_settings.language != "auto") return g_settings.language;
+#ifndef _WIN32
+    // la locale du système (LC_ALL, LC_MESSAGES, LANG) → le code le plus proche
+    const char* loc = getenv("LC_ALL");
+    if (!loc || !*loc) loc = getenv("LC_MESSAGES");
+    if (!loc || !*loc) loc = getenv("LANG");
+    std::string l = loc && *loc ? loc : "en_US.UTF-8";
+    size_t cut = l.find_first_of(".@");
+    if (cut != std::string::npos) l = l.substr(0, cut);
+    size_t u = l.find('_');
+    std::string lang = u == std::string::npos ? l : l.substr(0, u);
+    std::string terr = u == std::string::npos ? "" : l.substr(u + 1);
+    if (lang == "fr") return terr == "CA" ? "fr-CA" : "fr";
+    if (lang == "en") return terr == "GB" ? "en-GB" : "en-US";
+    if (lang == "de") return "de";
+    if (lang == "it") return "it";
+    if (lang == "es") return terr == "ES" ? "es-419" : "es";
+    if (lang == "pt") return terr == "BR" ? "pt-BR" : "pt";
+    if (lang == "nl") return "nl";
+    if (lang == "ru") return "ru";
+    if (lang == "ja") return "ja";
+    if (lang == "ko") return "ko";
+    if (lang == "zh") return terr == "TW" || terr == "HK" ? "zh-Hant" : "zh-Hans";
+    return "en-US";
+#else
     // langue de l'interface de Windows → code de la console le plus proche
     const LANGID id = GetUserDefaultUILanguage();
     const int sub = SUBLANGID(id);
@@ -437,6 +461,7 @@ std::string language_code() {
     case LANG_CHINESE: return sub == SUBLANG_CHINESE_SIMPLIFIED || sub == SUBLANG_CHINESE_SINGAPORE ? "zh-Hans" : "zh-Hant";
     default: return "en-US";
     }
+#endif
 }
 
 void settings_init(int argc, char** argv) {

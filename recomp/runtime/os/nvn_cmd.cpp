@@ -8,9 +8,16 @@
 // Les commandes sont enregistrées côté hôte (listes d'opérations) ; EndRecording renvoie un handle,
 // QueueSubmitCommands exécute les listes via nvn_execute (nvn_exec.h).
 #include "nvn_exec.h"
+#include "posix/win32.h"
 
+#ifdef _WIN32
+#ifdef _WIN32
 #include <direct.h>
+#endif
+#endif
+#ifdef _WIN32
 #include <io.h>
+#endif
 
 #include <cmath>
 #include <deque>

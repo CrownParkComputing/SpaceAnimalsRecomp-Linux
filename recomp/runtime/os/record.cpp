@@ -16,11 +16,13 @@
 #define NOMINMAX
 #endif
 #define WIN32_LEAN_AND_MEAN
-#include <windows.h>
+#include "posix/win32.h"
+#ifdef _WIN32
 #include <mfapi.h>
 #include <mfidl.h>
 #include <mfreadwrite.h>
 #include <mferror.h>
+#endif
 
 #include "hos.h"
 #include "record.h"
@@ -40,7 +42,17 @@
 
 namespace hos {
 namespace rec {
+#ifndef _WIN32
+
+// Sous Linux, pas d'enregistrement des cinématiques (Media Foundation n'existe pas) : le jeu
+// tourne, les extraits vidéo viennent du paquet officiel du launcher.
+bool wanted(uint64_t) { return false; }
+void frame(const uint8_t*, uint32_t, uint32_t, uint64_t) {}
+
+#else
+
 namespace {
+
 
 struct Config {
     std::string dir;
@@ -330,5 +342,6 @@ void frame(const uint8_t* px, uint32_t w, uint32_t h, uint64_t) {
     if (g_st.len >= c.max_frames) end_clip(true);
 }
 
+#endif
 }  // namespace rec
 }  // namespace hos

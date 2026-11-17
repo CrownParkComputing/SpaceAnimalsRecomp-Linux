@@ -1,5 +1,17 @@
 # SpaceAnimalsRecomp — StarFox Remake [recompiled]
 
+> [!WARNING]
+> **Experimental Linux port maintained by CrownParkComputing.**
+> See [LINUX.md](LINUX.md) for native SDL3/Vulkan build instructions.
+> Cinematic audio/animation synchronization remains under investigation.
+> This repository contains source only: no game dump, generated game code,
+> compiled game executable, shaders derived from the game, or pipeline caches.
+> Android support is work in progress; no working Android build is claimed.
+> Original project and licensing credit remain with
+> [SerenityG4K/SpaceAnimalsRecomp](https://github.com/SerenityG4K/SpaceAnimalsRecomp).
+>
+> The upstream Windows documentation follows.
+
 > [!IMPORTANT]
 > **This project is made almost entirely with AI.** Nearly all of the code, tooling, reverse engineering and documentation
 > here is written by an AI (Anthropic's Claude, through Claude Code), directed, tested and reviewed by a human,

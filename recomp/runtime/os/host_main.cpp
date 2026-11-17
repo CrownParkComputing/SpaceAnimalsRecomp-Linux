@@ -10,9 +10,17 @@
 
 #define NOMINMAX
 #define WIN32_LEAN_AND_MEAN
-#include <windows.h>
+#include "posix/win32.h"
+#ifdef _WIN32
 #include <mmsystem.h>
 #include <tlhelp32.h>
+#endif
+
+#ifndef _WIN32
+#include <execinfo.h>
+#include <signal.h>
+#include <ucontext.h>
+#endif
 
 #include <algorithm>
 #include <atomic>
@@ -103,7 +111,7 @@ void build_host_map() {
 
 std::string host_frame(uint64_t rip) {
     char buf[96];
-    auto it = std::upper_bound(g_host2guest.begin(), g_host2guest.end(), std::make_pair(rip, ~0ull));
+    auto it = std::upper_bound(g_host2guest.begin(), g_host2guest.end(), std::make_pair(uint64_t(rip), uint64_t(~0ull)));
     if (it != g_host2guest.begin() && rip < g_gen_end) {
         --it;
         if (rip - it->first < 0x200000) {
@@ -111,14 +119,21 @@ std::string host_frame(uint64_t rip) {
             return symbolize(it->second) + buf;
         }
     }
+#ifdef _WIN32
     HMODULE m = nullptr;
     GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
                        (LPCSTR)rip, &m);
     snprintf(buf, sizeof buf, "host 0x%llx (image+0x%llx)", (unsigned long long)rip,
              (unsigned long long)(rip - (uint64_t)m));
+#else
+    uint64_t base = host_module_base(rip);
+    snprintf(buf, sizeof buf, "hôte 0x%llx (image+0x%llx)", (unsigned long long)rip,
+             (unsigned long long)(rip - base));
+#endif
     return buf;
 }
 
+#ifdef _WIN32
 void print_backtrace(const CONTEXT* c0) {
     CONTEXT c;
     if (c0) c = *c0;
@@ -139,6 +154,16 @@ void print_backtrace(const CONTEXT* c0) {
         }
     }
 }
+#else   // Linux : la pile hôte par backtrace()
+void print_backtrace(const CONTEXT* c0) {
+    (void)c0;
+    void* frames[48];
+    const int n = backtrace(frames, 48);
+    HLOG("crash", "pile d'appels (fonctions invitées recompilées) :");
+    for (int i = 0; i < n; i++)
+        HLOG("crash", "  #%-2d %s", i, host_frame((uint64_t)(uintptr_t)frames[i]).c_str());
+}
+#endif
 
 void print_guest_state() {
     CPUState* ctx = current_ctx();
@@ -171,6 +196,7 @@ void print_guest_state() {
 
 std::atomic<int> g_crashing{0};
 
+#ifdef _WIN32
 LONG WINAPI veh(EXCEPTION_POINTERS* ep) {
     DWORD code = ep->ExceptionRecord->ExceptionCode;
     switch (code) {
@@ -226,7 +252,32 @@ LONG WINAPI veh(EXCEPTION_POINTERS* ep) {
     TerminateProcess(GetCurrentProcess(), 3);
     return EXCEPTION_CONTINUE_SEARCH;
 }
+#else   // Linux : les signaux
+void linux_crash(int sig, siginfo_t* si, void* ucv) {
+    if (g_crashing++) {
+        for (;;) Sleep(1000);
+    }
+    ucontext_t* uc = (ucontext_t*)ucv;
+    const uint64_t rip = uc ? (uint64_t)uc->uc_mcontext.gregs[REG_RIP] : 0;
+    const char* kind = sig == SIGILL ? "instruction" : sig == SIGFPE ? "division" : sig == SIGBUS ? "bus" : "accès";
+    HLOG("crash", "violation d'accès (%s) à 0x%llx depuis %s", kind,
+         (unsigned long long)(uintptr_t)(si ? si->si_addr : nullptr), host_frame(rip).c_str());
+    print_guest_state();
+    print_backtrace(nullptr);
+    fflush(nullptr);
+    _exit(3);
+}
 
+void install_crash_handler() {
+    struct sigaction sa {};
+    sa.sa_sigaction = linux_crash;
+    sa.sa_flags = SA_SIGINFO | SA_RESETHAND;
+    sigemptyset(&sa.sa_mask);
+    for (int s : {SIGSEGV, SIGBUS, SIGFPE, SIGILL, SIGABRT}) sigaction(s, &sa, nullptr);
+}
+#endif
+
+#ifdef _WIN32
 void dump_host_thread(void* h, uint64_t id) {
     HANDLE th = (HANDLE)h;
     if (SuspendThread(th) == (DWORD)-1) return;
@@ -238,11 +289,15 @@ void dump_host_thread(void* h, uint64_t id) {
     }
     ResumeThread(th);
 }
+#else   // Linux : la pile d'un autre fil n'est pas lisible sans ptrace ; le runtime s'en passe
+void dump_host_thread(void*, uint64_t) {}
+#endif
 
 
 // --profile T : profil par échantillonnage (1 ms) de tous les threads invités pendant 10 s à
 // partir de T secondes. Chaque échantillon est rangé dans la fonction invitée recompilée qui
 // s'exécute, ou dans « runtime » / « système » (DLL Windows : attentes, synchronisation).
+#ifdef _WIN32
 void run_profile(double start, double dur) {
     std::this_thread::sleep_for(std::chrono::duration<double>(start));
     HLOG("prof", "profile: %.0f s of sampling", dur);
@@ -262,7 +317,7 @@ void run_profile(double start, double dur) {
             ResumeThread(th);
             if (!ok) continue;
             uint64_t rip = c.Rip, key;
-            auto it = std::upper_bound(g_host2guest.begin(), g_host2guest.end(), std::make_pair(rip, ~0ull));
+            auto it = std::upper_bound(g_host2guest.begin(), g_host2guest.end(), std::make_pair(uint64_t(rip), uint64_t(~0ull)));
             if (it != g_host2guest.begin() && rip < g_gen_end && rip - std::prev(it)->first < 0x200000) {
                 key = std::prev(it)->second;
             } else {
@@ -304,6 +359,12 @@ void run_profile(double start, double dur) {
     for (size_t i = 0; i < r.size() && i < 25; i++)
         HLOG("prof", "  runtime image+0x%llx: %llu", (unsigned long long)r[i].first, (unsigned long long)r[i].second);
 }
+#else   // Linux : l'échantillonnage des registres des autres fils demande ptrace ; on ne le fait pas
+void run_profile(double start, double dur) {
+    std::this_thread::sleep_for(std::chrono::duration<double>(start));
+    HLOG("prof", "profil : non disponible sous Linux (registres des autres fils)");
+}
+#endif
 
 // --trace-api : appels de main vers le SDK (via PLT), par thread, premières occurrences
 uint64_t g_main_lo = 0, g_main_hi = 0, g_sdk_lo = 0, g_sdk_hi = 0;
@@ -425,6 +486,7 @@ namespace hos {
 // proche du module : exact pour ntdll, approximatif ailleurs). Seuls les fils passés par une fonction du tas sont
 // écrits, 12 au plus.
 namespace {
+#ifdef _WIN32
 std::string nom_adresse(uint64_t pc) {
     HMODULE m = nullptr;
     if (!GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
@@ -456,9 +518,11 @@ std::string nom_adresse(uint64_t pc) {
     else snprintf(b, sizeof b, "%s+0x%x", nom, rva);
     return b;
 }
+#endif
 }  // namespace
 
 void dump_thread_stacks(const char* why) {
+#ifdef _WIN32
     struct Pile { DWORD tid; int n; uint64_t pc[72]; };
     static Pile piles[512];
     int np = 0;
@@ -524,6 +588,9 @@ void dump_thread_stacks(const char* why) {
         if (ecrits++ < 12) HLOG("mem", "  thread %lu: %s", piles[i].tid, ligne.c_str());
     }
     HLOG("mem", "  stacks (%s): %d threads, %d inside a heap function", why, np, dans_tas);
+#else
+    HLOG("mem", "thread stack enumeration unavailable on Linux (%s)", why);
+#endif
 }
 
 // (octets vivants alloués par new ; pour chaque classe de taille 2^c : nombre et octets alloués depuis le lancement)
@@ -535,6 +602,7 @@ void cpp_heap_stats(int64_t* vivants, uint64_t nombre[40], uint64_t octets[40]) 
 
 // Première ligne du journal : version (recomp/VERSION, deux dossiers au-dessus de l'exécutable), Windows, processeur,
 // mémoire. Le GPU et son pilote suivent à l'initialisation de Vulkan.
+#ifdef _WIN32
 std::string lire_registre(HKEY racine, const char* cle, const char* valeur) {
     char b[256] = {};
     DWORD n = sizeof b - 1;
@@ -580,6 +648,14 @@ void journal_systeme() {
          si.dwNumberOfProcessors, IsProcessorFeaturePresent(PF_AVX2_INSTRUCTIONS_AVAILABLE) ? "yes" : "NO",
          ms.ullTotalPhys / 1073741824.0, ms.ullAvailPhys / 1073741824.0);
 }
+#else
+void journal_systeme() {
+    MEMORYSTATUSEX ms{};
+    GlobalMemoryStatusEx(&ms);
+    HLOG("main", "SpaceAnimalsRecomp Linux; %u threads; RAM %.1f GB (%.1f free)",
+         std::thread::hardware_concurrency(), ms.ullTotalPhys / 1073741824.0, ms.ullAvailPhys / 1073741824.0);
+}
+#endif
 
 // Arrêts sans exception Windows : allocation refusée (operator new), std::terminate, abort(). Jusqu'à la 1.0.2, le jeu
 // se fermait alors d'un coup (code 0xC0000409) sans un mot dans le journal : vu le 2026-11-11 chez l'utilisateur, 18 s
@@ -632,8 +708,10 @@ bool version_du_jeu_a_jour() {
 }
 
 int main(int argc, char** argv) {
+#ifdef _WIN32
     dpi_compatible();   // avant toute fenêtre (et avant SDL)
     SetConsoleOutputCP(CP_UTF8);
+#endif
     std::string manifest, logpath = "recomp_run.log";
     double dump_after = 0;
     bool trace_api = false;
@@ -674,11 +752,13 @@ int main(int argc, char** argv) {
         GetModuleFileNameA(nullptr, exe, MAX_PATH);
         std::string d = exe;
         d = d.substr(0, d.find_last_of("\\/"));
-        manifest = d + "\\manifest.txt";
+        manifest = d + "/manifest.txt";
     }
     g_logfile = fopen(logpath.c_str(), "w");
     journal_systeme();           // version, Windows, processeur, mémoire : en tête de chaque journal (rapport de bug)
+#ifdef _WIN32
     HLOG("main", "Windows display scaling of the main screen: %u %% (%s)", GetDpiForSystem() * 100 / 96, g_dpi_mode);
+#endif
     settings_init(argc, argv);   // recomp.ini, RECOMP_*, --refresh / --resolution / --native-res / --config
     version_du_jeu_a_jour();   // note seulement dans le journal un jeu construit par une autre version
     mem_marge_init();            // marge de mémoire engagée d'avance (memory.cpp), rendue si Windows en refuse au jeu
@@ -686,6 +766,7 @@ int main(int argc, char** argv) {
     mem_veille_init();           // veille de la mémoire du PC : caches vidés avant le premier refus de Windows
     mem_census_init();           // RECOMP_MEM_CENSUS=s seulement (diagnostic)
     mem_vides_init();            // recomp.ini, zero_page_release : pages vides de la mémoire du jeu rendues à Windows
+#ifdef _WIN32
     // Minuteur à 1 ms. Windows 11 ignore timeBeginPeriod pour un processus dont la fenêtre est
     // masquée ou en arrière-plan (les attentes courtes durent alors 15,6 ms, et le jeu tombe à
     // ~42 images/s) ; on demande explicitement que la résolution soit respectée et que le
@@ -698,8 +779,13 @@ int main(int argc, char** argv) {
         SetProcessInformation(GetCurrentProcess(), ProcessPowerThrottling, &st, sizeof st);
     }
     timeBeginPeriod(1);
+#endif
     mem_init();   // en premier : réserve l'espace invité avant toute autre allocation
+#ifdef _WIN32
     AddVectoredExceptionHandler(1, veh);
+#else
+    install_crash_handler();
+#endif
     std::set_new_handler(plus_de_memoire);   // allocation refusée dans le runtime : message clair, code 4
     std::set_terminate(arret_imprevu);
     signal(SIGABRT, [](int) { arret_imprevu(); });

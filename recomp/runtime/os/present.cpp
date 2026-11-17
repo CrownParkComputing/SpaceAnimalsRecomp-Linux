@@ -1,13 +1,17 @@
-// Présentation hôte provisoire : fenêtre Win32 (GDI) qui affiche la couleur d'effacement de la
-// dernière image présentée par le jeu et le compteur d'images. Sert à vérifier que la boucle de
-// rendu tourne ; sera remplacée par le moteur de rendu (Vulkan) quand les commandes NVN seront
-// traduites. Fermer la fenêtre termine le processus.
+// Présentation hôte : la fenêtre qui affiche le jeu. Sous Windows, une fenêtre Win32 (GDI) qui
+// affiche la couleur d'effacement de la dernière image présentée par le jeu et le compteur
+// d'images ; sous Linux, la même chose avec SDL3 (fenêtre, boucle d'événements, plein écran).
+// Fermer la fenêtre termine le processus.
 #include "gfx.h"
 #include "settings.h"
 
+#ifndef _WIN32
+#include <SDL3/SDL.h>
+#else
 #define NOMINMAX
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#endif
 
 #include <algorithm>
 #include <atomic>
@@ -25,7 +29,6 @@ void save_caches();   // vk_render.cpp : écrit pipelines.cache
 namespace {
 
 std::once_flag g_once;
-HWND g_hwnd = nullptr;
 std::atomic<bool> g_vulkan{false};
 std::mutex g_lk;
 float g_color[4] = {0, 0, 0, 1};
@@ -40,19 +43,78 @@ double g_fps = 0;
 // 2026-11-12 (host_main.cpp, dpi_compatible) : ses tailles sont en pixels réels. RECOMP_DPI=<ppp> (essais : 144 pour
 // 150 %) simule une mise à l'échelle pour le choix de resolution = auto et la taille de la fenêtre.
 double echelle_ecran() {
+#ifdef _WIN32
     static const double k = [] {
         UINT ppp = GetDpiForSystem();
         if (const char* e = getenv("RECOMP_DPI")) ppp = (UINT)atoi(e);
         return ppp >= 48 ? ppp / 96.0 : 1.0;
     }();
     return k;
+#else
+    return 1.0;
+#endif
 }
 
 // Plein écran sans bordure (recomp.ini : window_mode) : fenêtre sans cadre couvrant l'écran où elle se
 // trouve, pour présenter l'image pixel pour pixel. Une fenêtre à cadre de la taille de l'écran n'a
 // qu'une zone utile plus petite (2560×1421 sur un écran 1440p) : l'image y était réduite, donc floue.
 bool g_borderless = false;
+
+#ifndef _WIN32
+
+// ---- Linux (SDL3) ------------------------------------------------------------------------
+SDL_Window* g_sdl_window = nullptr;
+
+void set_borderless(bool on) {
+    if (on == g_borderless || !g_sdl_window) return;
+    if (!SDL_SetWindowFullscreen(g_sdl_window, on)) {
+        HLOG("gfx", "fullscreen request failed: %s", SDL_GetError());
+        return;
+    }
+    g_borderless = on;
+    SDL_SetWindowBordered(g_sdl_window, !on);
+    HLOG("gfx", "fenêtre : %s", on ? "plein écran sans bordure" : "fenêtrée");
+}
+
+void window_thread() {
+    if (!SDL_Init(SDL_INIT_VIDEO)) {
+        HLOG("gfx", "SDL_Init a échoué : %s", SDL_GetError());
+        return;
+    }
+    SDL_SetHint(SDL_HINT_RENDER_VSYNC, "0");
+    Uint32 flags = SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE;
+    g_sdl_window = SDL_CreateWindow("StarFox Remake [recompiled]", g_w, g_h, flags);
+    if (!g_sdl_window) {
+        HLOG("gfx", "fenêtre impossible : %s", SDL_GetError());
+        return;
+    }
+    if (settings().borderless) set_borderless(true);
+    SDL_Event ev;
+    while (SDL_WaitEvent(&ev)) {
+        switch (ev.type) {
+        case SDL_EVENT_QUIT:
+            HLOG("gfx", "fenêtre fermée : fin du processus");
+            vkr::save_caches();   // pipelines créés pendant la partie
+            fflush(nullptr);
+            std::_Exit(0);
+        case SDL_EVENT_KEY_DOWN:
+            if (ev.key.key == SDLK_F11) set_borderless(!g_borderless);
+            else if (ev.key.key == SDLK_RETURN && (ev.key.mod & SDL_KMOD_ALT)) set_borderless(!g_borderless);
+            break;
+        case SDL_EVENT_WINDOW_FOCUS_LOST:
+        case SDL_EVENT_WINDOW_MINIMIZED:
+            break;
+        default:
+            break;
+        }
+    }
+}
+
+#else   // ---- Windows (Win32) ---------------------------------------------------------------
+
+HWND g_hwnd = nullptr;
 WINDOWPLACEMENT g_wp_windowed{sizeof(WINDOWPLACEMENT)};
+
 void set_borderless(HWND h, bool on) {
     if (on == g_borderless) return;
     if (on) {
@@ -196,6 +258,8 @@ void window_thread() {
     }
 }
 
+#endif  // _WIN32
+
 }  // namespace
 
 void gfx_open_window(int width, int height) {
@@ -208,20 +272,54 @@ void gfx_open_window(int width, int height) {
     });
 }
 
-void* gfx_window_handle() { return g_hwnd; }
+void* gfx_window_handle() {
+#ifdef _WIN32
+    return g_hwnd;
+#else
+    return g_sdl_window;
+#endif
+}
+
+#ifndef _WIN32
+// La zone client de la fenêtre hôte (le moteur Vulkan en a besoin pour la swapchain).
+bool gfx_client_rect(int* w, int* h) {
+    if (!g_sdl_window) return false;
+    int ww = 0, hh = 0;
+    if (!SDL_GetWindowSize(g_sdl_window, &ww, &hh)) return false;
+    *w = ww;
+    *h = hh;
+    return true;
+}
+#endif
 
 void gfx_status(const char* text) {
     char title[160];
     snprintf(title, sizeof title, "StarFox Remake [recompiled]  -  %s", text);
+#ifdef _WIN32
     if (g_hwnd) SetWindowTextA(g_hwnd, title);
+#else
+    if (g_sdl_window) SDL_SetWindowTitle(g_sdl_window, title);
+#endif
 }
 
 void gfx_screen_size(int* w, int* h) {
+#ifdef _WIN32
     // en points (pixels réels ÷ mise à l'échelle de Windows) : resolution = auto garde le choix d'avant la compatibilité
     // DPI, par exemple 1080p pour un écran 4K à 200 %, plutôt qu'un rendu plus lourd après une mise à jour
     const double k = echelle_ecran();
     *w = (int)lround(GetSystemMetrics(SM_CXSCREEN) / k);
     *h = (int)lround(GetSystemMetrics(SM_CYSCREEN) / k);
+#else
+    SDL_DisplayID id = SDL_GetPrimaryDisplay();
+    const SDL_DisplayMode* m = id ? SDL_GetDesktopDisplayMode(id) : nullptr;
+    if (!m) {   // aucun écran : la taille par défaut du jeu
+        *w = 1920;
+        *h = 1080;
+        return;
+    }
+    *w = m->w;
+    *h = m->h;
+#endif
 }
 
 void gfx_count_frame(uint64_t frame) {
@@ -239,13 +337,21 @@ void gfx_count_frame(uint64_t frame) {
         if (++n % 10 == 0) HLOG("gfx", "%.1f fps (frame %llu, Vulkan)", g_fps, (unsigned long long)frame);
         char title[96];
         snprintf(title, sizeof title, "StarFox Remake [recompiled]  -  %.0f fps", g_fps);
+#ifdef _WIN32
         if (g_hwnd) SetWindowTextA(g_hwnd, title);
+#else
+        if (g_sdl_window) SDL_SetWindowTitle(g_sdl_window, title);
+#endif
     }
 }
 
 bool gfx_window_focused() {
+#ifdef _WIN32
     HWND f = GetForegroundWindow();
     return g_hwnd && f == g_hwnd;
+#else
+    return g_sdl_window && SDL_GetKeyboardFocus() == g_sdl_window;
+#endif
 }
 
 void gfx_present(const float rgba[4], uint64_t frame) {
@@ -264,18 +370,29 @@ void gfx_present(const float rgba[4], uint64_t frame) {
             if (++n % 10 == 0) HLOG("gfx", "%.1f fps (frame %llu)", g_fps, (unsigned long long)frame);
         }
     }
+#ifndef _WIN32
+    // la swapchain Vulkan présente l'image ; le compteur reste dans le titre
+    char title[96];
+    snprintf(title, sizeof title, "StarFox Remake [recompiled]  -  %.0f img/s", g_fps);
+    if (g_sdl_window) SDL_SetWindowTitle(g_sdl_window, title);
+#else
     if (g_hwnd) InvalidateRect(g_hwnd, nullptr, FALSE);
+#endif
     // synchro verticale simulée : au plus 60 images par seconde, attente au minuteur haute
     // résolution (précis à ~0,5 ms quelle que soit la résolution du minuteur système)
     static const bool novsync = getenv("RECOMP_NOVSYNC") != nullptr;   // diagnostic
     auto next = g_last + microseconds(16667);
     if (now < next && !novsync) {
+#ifdef _WIN32
         thread_local HANDLE tm = CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
                                                         TIMER_ALL_ACCESS);
         LARGE_INTEGER due;
         due.QuadPart = -(LONGLONG)(duration_cast<nanoseconds>(next - now).count() / 100);
         if (tm && SetWaitableTimer(tm, &due, 0, nullptr, nullptr, FALSE)) WaitForSingleObject(tm, INFINITE);
         else std::this_thread::sleep_until(next);
+#else
+        std::this_thread::sleep_until(next);
+#endif
     }
     // pas de rattrapage en rafale après un retard : la cadence repart de maintenant
     g_last = std::max(next, now);

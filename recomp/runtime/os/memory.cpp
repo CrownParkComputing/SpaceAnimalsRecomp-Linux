@@ -1,13 +1,18 @@
 // Espace d'adressage invité : réservation à adresse fixe (identité invité == hôte), carte des
 // régions façon Horizon (état / permissions / attributs) pour svcQueryMemory & co.
+#ifndef _WIN32
+#include "posix/memory.inc"
+#else
 #include <atomic>
 #include "hos.h"
 #include "settings.h"
 
 #define NOMINMAX
 #define WIN32_LEAN_AND_MEAN
-#include <windows.h>
+#include "posix/win32.h"
+#ifdef _WIN32
 #include <psapi.h>
+#endif
 
 #include <algorithm>
 #include <cstdlib>
@@ -1562,3 +1567,4 @@ uint64_t mem_used() {
 }
 
 }  // namespace hos
+#endif

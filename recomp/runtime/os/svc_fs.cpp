@@ -8,7 +8,7 @@
 
 #define NOMINMAX
 #define WIN32_LEAN_AND_MEAN
-#include <windows.h>
+#include "posix/win32.h"
 
 #include <filesystem>
 #include <fstream>
@@ -98,7 +98,7 @@ struct Romfs {
         char exe[MAX_PATH] = {};
         GetModuleFileNameA(nullptr, exe, MAX_PATH);
         std::string odir = exe;
-        odir = odir.substr(0, odir.find_last_of("\/") + 1) + "romfs_override\\";
+        odir = odir.substr(0, odir.find_last_of("\/") + 1) + "romfs_override" + PATH_SEP;
         for (size_t i = 0; i < g_romfs.size(); i++) {
             RomfsFile rf = g_romfs[i];
             std::shared_ptr<std::vector<uint8_t>> host;
@@ -275,6 +275,7 @@ std::shared_ptr<Service> make_romfs_storage() {
         case 4: r.push<uint64_t>(romfs().total); return true;   // GetSize
         case 5: r.out.assign(0x40, 0); return true;             // OperateRange
         }
+        HLOG("fs", "fs:IStorage(romfs) : commande %u non gérée", r.cmd);
         return false;
     });
 }
@@ -315,7 +316,15 @@ const fs::path& save_root() {
             HLOG("fs", "saves: %s (RECOMP_SAVE_DIR, %zu file(s))", p.u8string().c_str(), compter_fichiers(p));
             return p;
         }
+#ifdef _WIN32
         const wchar_t* appdata = _wgetenv(L"APPDATA");
+#else
+        const char* appdata = getenv("XDG_DATA_HOME");
+        const char* home = getenv("HOME");
+        const fs::path xdg = appdata && *appdata ? fs::path(appdata) :
+                             home && *home ? fs::path(home) / ".local/share" : fs::path{};
+        appdata = xdg.empty() ? nullptr : xdg.c_str();
+#endif
         if (!appdata || !*appdata) {   // pas de profil : ancien emplacement
             fs::create_directories(ancien, ec);
             HLOG("fs", "saves: %s (APPDATA missing: next to the game, %zu file(s))", ancien.u8string().c_str(),
@@ -530,6 +539,7 @@ std::shared_ptr<Service> make_fsp() {
         case 1005: r.push<uint32_t>(0); return true;                // GetGlobalAccessLogMode
         case 1011: r.push<uint32_t>(0); r.push<uint32_t>(1); return true;   // GetProgramIndexForAccessLog
         }
+        HLOG("fs", "fsp-srv : commande %u non gérée", r.cmd);
         return false;
     });
 }
